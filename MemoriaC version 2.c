@@ -1,4 +1,4 @@
-/* restaurante.c - Simulador de restaurante con IDs consecutivos */
+/* restaurante.c - Simulador de restaurante con memoria compartida */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,6 +16,7 @@
 #define SEM_MUTEX "/sem_mutex"
 #define SEM_PEDIDOS "/sem_pedidos"
 #define SEM_CONFIRMACION "/sem_conf"
+#define SEM_IDS "/sem_ids"
 
 typedef struct {
     int cliente_id;
@@ -29,14 +30,14 @@ typedef struct {
     int inicio;
     int fin;
     int cantidad;
-    int siguiente_id;
+    int id_counter;  // Nuevo campo para IDs únicos
 } ColaPedidos;
 
 void inicializar_cola(ColaPedidos *cola) {
     cola->inicio = 0;
     cola->fin = 0;
     cola->cantidad = 0;
-    cola->siguiente_id = 1;
+    cola->id_counter = 1;
     for (int i = 0; i < MAX_PEDIDOS; i++) {
         cola->cola[i].cliente_id = -1;
         memset(cola->cola[i].pedido, 0, MAX_PEDIDO_LEN);
@@ -67,8 +68,8 @@ void monitor() {
                    i,
                    cola->cola[i].cliente_id,
                    cola->cola[i].pedido,
-                   cola->cola[i].confirmado ? "S\u00ed" : "No",
-                   cola->cola[i].pedido_listo ? "S\u00ed" : "No");
+                   cola->cola[i].confirmado ? "Sí" : "No",
+                   cola->cola[i].pedido_listo ? "Sí" : "No");
         }
         printf("\nPresiona Ctrl+C para salir del monitor.\n");
         sleep(1);
@@ -81,12 +82,13 @@ void monitor() {
 void cocina() {
     int shm_fd;
     ColaPedidos *cola;
-    sem_t *mutex, *sem_pedidos, *sem_conf;
+    sem_t *mutex, *sem_pedidos, *sem_conf, *sem_ids;
 
     shm_unlink(SHM_NAME);
     sem_unlink(SEM_MUTEX);
     sem_unlink(SEM_PEDIDOS);
     sem_unlink(SEM_CONFIRMACION);
+    sem_unlink(SEM_IDS);
 
     shm_fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
     ftruncate(shm_fd, sizeof(ColaPedidos));
@@ -97,6 +99,7 @@ void cocina() {
     mutex = sem_open(SEM_MUTEX, O_CREAT, 0666, 1);
     sem_pedidos = sem_open(SEM_PEDIDOS, O_CREAT, 0666, 0);
     sem_conf = sem_open(SEM_CONFIRMACION, O_CREAT, 0666, 0);
+    sem_ids = sem_open(SEM_IDS, O_CREAT, 0666, 1);
 
     printf("[Cocina] Esperando pedidos...\n");
     while (1) {
@@ -109,7 +112,7 @@ void cocina() {
             p->confirmado = 1;
             sem_post(sem_conf);
 
-            sleep(2);
+            sleep(2); // Simular preparación
 
             p->pedido_listo = 1;
             printf("[Cocina] Pedido de cliente %d listo.\n", p->cliente_id);
@@ -128,9 +131,11 @@ void cocina() {
     sem_close(mutex);
     sem_close(sem_pedidos);
     sem_close(sem_conf);
+    sem_close(sem_ids);
     sem_unlink(SEM_MUTEX);
     sem_unlink(SEM_PEDIDOS);
     sem_unlink(SEM_CONFIRMACION);
+    sem_unlink(SEM_IDS);
 
     printf("[Cocina] Recursos liberados.\n");
 }
@@ -138,7 +143,7 @@ void cocina() {
 void cliente() {
     int shm_fd;
     ColaPedidos *cola;
-    sem_t *mutex, *sem_pedidos, *sem_conf;
+    sem_t *mutex, *sem_pedidos, *sem_conf, *sem_ids;
 
     shm_fd = shm_open(SHM_NAME, O_RDWR, 0666);
     cola = mmap(0, sizeof(ColaPedidos), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
@@ -146,19 +151,21 @@ void cliente() {
     mutex = sem_open(SEM_MUTEX, 0);
     sem_pedidos = sem_open(SEM_PEDIDOS, 0);
     sem_conf = sem_open(SEM_CONFIRMACION, 0);
+    sem_ids = sem_open(SEM_IDS, 0);
 
-    char pedido[MAX_PEDIDO_LEN];
     int id;
+    char pedido[MAX_PEDIDO_LEN];
 
-    sem_wait(mutex);
-    id = cola->siguiente_id++;
-    sem_post(mutex);
+    // Asignar ID único
+    sem_wait(sem_ids);
+    id = cola->id_counter++;
+    sem_post(sem_ids);
 
     while (1) {
         printf("[Cliente %d] Ingrese su pedido (ENTER para salir): ", id);
         fgets(pedido, MAX_PEDIDO_LEN, stdin);
         if (pedido[0] == '\n') break;
-        pedido[strcspn(pedido, "\n")] = 0;
+        pedido[strcspn(pedido, "\n")] = 0; // Quitar salto
 
         if (strlen(pedido) == 0) continue;
 
@@ -198,7 +205,7 @@ void cliente() {
             if (listo) break;
             sleep(1);
         }
-        printf("[Cliente %d] Pedido preparado. \u00a1Buen provecho!\n", id);
+        printf("[Cliente %d] Pedido preparado. ¡Buen provecho!\n", id);
     }
 
     munmap(cola, sizeof(ColaPedidos));
@@ -206,6 +213,7 @@ void cliente() {
     sem_close(mutex);
     sem_close(sem_pedidos);
     sem_close(sem_conf);
+    sem_close(sem_ids);
 }
 
 int main(int argc, char *argv[]) {
@@ -221,10 +229,11 @@ int main(int argc, char *argv[]) {
     } else if (strcmp(argv[1], "monitor") == 0) {
         monitor();
     } else {
-        printf("Argumento inv\u00e1lido. Use cliente, cocina o monitor.\n");
+        printf("Argumento inválido. Use cliente, cocina o monitor.\n");
         return 1;
     }
 
     return 0;
 }
+
 
