@@ -81,37 +81,51 @@ void cliente() {
 
     printf("Cliente %d conectado. Puede realizar pedidos.\n", id);
 
-    while (1) {
-        char pedido[MAX_PEDIDO_LEN];
-        printf("Ingrese su pedido: ");
-        fgets(pedido, MAX_PEDIDO_LEN, stdin);
-        pedido[strcspn(pedido, "\n")] = 0;
+ while (1) {
+    char pedido[MAX_PEDIDO_LEN];
+    printf("Ingrese su pedido: ");
+    fgets(pedido, MAX_PEDIDO_LEN, stdin);
 
-        sem_wait(mutex);
-        if (cola->cantidad == MAX_PEDIDOS) {
-            sem_post(mutex);
-            printf("Cola llena. Intente más tarde.\n");
-            continue;
-        }
+    // Limpiar el salto de línea
+    pedido[strcspn(pedido, "\n")] = 0;
 
-        cola->cola[id].cliente_id = id;
-        strncpy(cola->cola[id].pedido, pedido, MAX_PEDIDO_LEN);
-        cola->cola[id].confirmado = 0;
-        cola->cola[id].pedido_listo = 0;
+    // Eliminar espacios al inicio y final
+    char *start = pedido;
+    while (*start == ' ') start++;
+    char *end = start + strlen(start) - 1;
+    while (end > start && *end == ' ') *end-- = '\0';
 
-        cola->cola[cola->fin] = cola->cola[id];
-        cola->fin = (cola->fin + 1) % MAX_PEDIDOS;
-        cola->cantidad++;
-
-        sem_post(mutex);
-        sem_post(sem_pedidos);
-
-        sem_wait(sem_conf);
-        printf("Cocina recibió su pedido.\n");
-        sem_wait(sem_conf);
-        printf("Su pedido está listo.\n");
+    // Validar que no esté vacío
+    if (strlen(start) == 0) {
+        printf("Pedido inválido. No puede estar vacío.\n");
+        continue;
     }
+
+    sem_wait(mutex);
+    if (cola->cantidad == MAX_PEDIDOS) {
+        sem_post(mutex);
+        printf("Cola llena. Intente más tarde.\n");
+        continue;
+    }
+
+    cola->cola[id].cliente_id = id;
+    strncpy(cola->cola[id].pedido, start, MAX_PEDIDO_LEN);
+    cola->cola[id].confirmado = 0;
+    cola->cola[id].pedido_listo = 0;
+
+    cola->cola[cola->fin] = cola->cola[id];
+    cola->fin = (cola->fin + 1) % MAX_PEDIDOS;
+    cola->cantidad++;
+
+    sem_post(mutex);
+    sem_post(sem_pedidos);
+
+    sem_wait(sem_conf);
+    printf("Cocina recibió su pedido.\n");
+    sem_wait(sem_conf);
+    printf("Su pedido está listo.\n");
 }
+
 
 void cocina() {
     int shm_fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
