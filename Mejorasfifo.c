@@ -73,6 +73,7 @@ void cocina() {
 
         printf("[Cocina] Pedido de cliente %d listo.\n", p.cliente_id);
         write(fd_monitor, &p, sizeof(Pedido));
+        write(fd_cocina, &p, sizeof(Pedido));
 
         // Actualiza lista
         for (int i = 0; i < MAX_PEDIDOS; i++) {
@@ -120,18 +121,21 @@ void cliente() {
         write(fd_cliente, &p, sizeof(Pedido));
 
         read(fd_cocina, &p, sizeof(Pedido));
-        printf("[Cliente %d] Pedido recibido. Esperando preparación...\n", id);
-
+        if(p.confirmado){
+            printf("[Cliente %d] Pedido confirmado. Esperando preparacion... \n", id);
+        }
+        //espera que este listo
         while (1) {
             Pedido respuesta;
-            int r = read(fd_monitor, &respuesta, sizeof(Pedido));
+            int r = read(fd_cocina, &respuesta, sizeof(Pedido));
             if (r > 0 && respuesta.cliente_id == id && strcmp(respuesta.pedido, pedido) == 0 && respuesta.pedido_listo) {
+                printf("[Cliente %d] Pedido preparado. ¡Buen provecho!\n", id);
                 break;
             }
             sleep(1);
         }
 
-        printf("[Cliente %d] Pedido preparado. ¡Buen provecho!\n", id);
+        
     }
 
     close(fd_cliente);
