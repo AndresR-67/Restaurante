@@ -1,5 +1,3 @@
-/* restaurante_fifo.c - Simulador de restaurante con FIFOs */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,9 +10,9 @@
 #include <errno.h>
 
 #define FIFO_PEDIDOS "/tmp/fifo_pedidos"
-#define FIFO_RESPUESTA "/tmp/fifo_respuesta"
+#define FIFO_ID "/tmp/fifo_id"
+#define FIFO_MONITOR "/tmp/fifo_monitor"
 #define MAX_PEDIDO_LEN 100
-#define MAX_CLIENTES 100
 
 typedef struct {
     int cliente_id;
@@ -27,28 +25,101 @@ typedef struct {
     char pedido[MAX_PEDIDO_LEN];
 } EstadoPedido;
 
-EstadoPedido pedidos_monitor[MAX_CLIENTES];
-int total_pedidos = 0;
+void cocina();
+void cliente();
+void monitor();
+void crear_fifos();
+void limpiar_fifos();
+int solicitar_id();
 
-void limpiar_fifo() {
-    unlink(FIFO_PEDIDOS);
-    unlink(FIFO_RESPUESTA);
+int main(int argc, char *argv[]) {
+    if (argc != 2) {
+        printf("Uso: %s [cliente|cocina|monitor]\n", argv[0]);
+        return 1;
+    }
+
+    signal(SIGINT, (__sighandler_t)limpiar_fifos);
+    crear_fifos();
+
+    if (strcmp(argv[1], "cliente") == 0) {
+        cliente();
+    } else if (strcmp(argv[1], "cocina") == 0) {
+        cocina();
+    } else if (strcmp(argv[1], "monitor") == 0) {
+        monitor();
+    } else {
+        printf("Argumento inválido. Use cliente, cocina o monitor.\n");
+        return 1;
+    }
+
+    return 0;
 }
+
+// ======================= COCINA =========================
+
+void cocina() {
+    Pedido pedido;
+
+    printf("[Cocina] Esperando pedidos...\n");
+
+    while (1) {
+        int fd = open(FIFO_PEDIDOS, O_RDONLY);
+        if (fd < 0) continue;
+
+        int r = read(fd, &pedido, sizeof(Pedido));
+        close(fd);
+        if (r <= 0) continue;
+
+        printf("[Cocina] Pedido de cliente %d: %s\n", pedido.cliente_id, pedido.pedido);
+
+        EstadoPedido estado;
+        estado.cliente_id = pedido.cliente_id;
+        strncpy(estado.pedido, pedido.pedido, MAX_PEDIDO_LEN);
+        strcpy(estado.estado, "Recibido");
+
+        int mon = open(FIFO_MONITOR, O_WRONLY | O_NONBLOCK);
+        write(mon, &estado, sizeof(estado));
+        close(mon);
+
+        sleep(1);
+        strcpy(estado.estado, "Preparando");
+        mon = open(FIFO_MONITOR, O_WRONLY | O_NONBLOCK);
+        write(mon, &estado, sizeof(estado));
+        close(mon);
+
+        sleep(2);
+        strcpy(estado.estado, "Listo");
+        mon = open(FIFO_MONITOR, O_WRONLY | O_NONBLOCK);
+        write(mon, &estado, sizeof(estado));
+        close(mon);
+
+        char respuesta_fifo[64];
+        sprintf(respuesta_fifo, "/tmp/resp_%d", pedido.cliente_id);
+        int resp = open(respuesta_fifo, O_WRONLY);
+        if (resp >= 0) {
+            char msg[] = "Pedido preparado. ¡Buen provecho!";
+            write(resp, msg, sizeof(msg));
+            close(resp);
+        }
+    }
+}
+
+// ======================= CLIENTE =========================
 
 void cliente() {
     Pedido pedido;
+    int cliente_id = solicitar_id();
     char respuesta_fifo[64];
-    int cliente_id = getpid();  // ID único por proceso
-    pedido.cliente_id = cliente_id;
-
-    // Crear FIFO de respuesta
     sprintf(respuesta_fifo, "/tmp/resp_%d", cliente_id);
     mkfifo(respuesta_fifo, 0666);
+
+    pedido.cliente_id = cliente_id;
 
     while (1) {
         printf("[Cliente %d] Ingrese su pedido (ENTER para salir): ", cliente_id);
         fgets(pedido.pedido, MAX_PEDIDO_LEN, stdin);
         if (pedido.pedido[0] == '\n') break;
+
         pedido.pedido[strcspn(pedido.pedido, "\n")] = 0;
         if (strlen(pedido.pedido) == 0) continue;
 
@@ -70,99 +141,77 @@ void cliente() {
     unlink(respuesta_fifo);
 }
 
-void cocina() {
-    Pedido pedido;
+// ======================= MONITOR =========================
+
+void monitor() {
     EstadoPedido estado;
-    int fd;
-
-    // Crear FIFO si no existe
-    mkfifo(FIFO_PEDIDOS, 0666);
-    mkfifo(FIFO_RESPUESTA, 0666);
-
-    printf("[Cocina] Esperando pedidos...\n");
+    EstadoPedido lista[100];
+    int total = 0;
 
     while (1) {
-        fd = open(FIFO_PEDIDOS, O_RDONLY);
-        if (fd < 0) continue;
-        int r = read(fd, &pedido, sizeof(Pedido));
+        int fd = open(FIFO_MONITOR, O_RDONLY);
+        int r = read(fd, &estado, sizeof(EstadoPedido));
         close(fd);
         if (r <= 0) continue;
 
-        printf("[Cocina] Preparando pedido de cliente %d: %s\n", pedido.cliente_id, pedido.pedido);
-
-        // Registrar para el monitor
-        int i;
         int encontrado = 0;
-        for (i = 0; i < total_pedidos; i++) {
-            if (pedidos_monitor[i].cliente_id == pedido.cliente_id) {
+        for (int i = 0; i < total; i++) {
+            if (lista[i].cliente_id == estado.cliente_id) {
+                lista[i] = estado;
                 encontrado = 1;
                 break;
             }
         }
-        if (!encontrado && total_pedidos < MAX_CLIENTES) {
-            pedidos_monitor[total_pedidos].cliente_id = pedido.cliente_id;
-            strncpy(pedidos_monitor[total_pedidos].pedido, pedido.pedido, MAX_PEDIDO_LEN);
-            strcpy(pedidos_monitor[total_pedidos].estado, "Recibido");
-            total_pedidos++;
-        } else if (encontrado) {
-            strncpy(pedidos_monitor[i].pedido, pedido.pedido, MAX_PEDIDO_LEN);
-            strcpy(pedidos_monitor[i].estado, "Recibido");
+        if (!encontrado && total < 100) {
+            lista[total++] = estado;
         }
 
-        // Simula confirmación y preparación
-        sleep(1);
-        if (encontrado)
-            strcpy(pedidos_monitor[i].estado, "Preparando");
-
-        sleep(2);
-
-        // Pedido listo
-        char respuesta_fifo[64];
-        sprintf(respuesta_fifo, "/tmp/resp_%d", pedido.cliente_id);
-        int resp = open(respuesta_fifo, O_WRONLY);
-        char estado_final[] = "Pedido preparado. ¡Buen provecho!";
-        write(resp, estado_final, sizeof(estado_final));
-        close(resp);
-
-        if (encontrado)
-            strcpy(pedidos_monitor[i].estado, "Listo");
-    }
-}
-
-void monitor() {
-    while (1) {
         system("clear");
         printf("\n--- ESTADO DE LA COLA DE PEDIDOS ---\n\n");
-        for (int i = 0; i < total_pedidos; i++) {
+        for (int i = 0; i < total; i++) {
             printf("Cliente ID: %d | Pedido: %s | Estado: %s\n",
-                   pedidos_monitor[i].cliente_id,
-                   pedidos_monitor[i].pedido,
-                   pedidos_monitor[i].estado);
+                   lista[i].cliente_id,
+                   lista[i].pedido,
+                   lista[i].estado);
         }
         printf("\nPresiona Ctrl+C para salir del monitor.\n");
-        sleep(1);
     }
 }
 
-int main(int argc, char *argv[]) {
-    if (argc != 2) {
-        printf("Uso: %s [cliente|cocina|monitor]\n", argv[0]);
-        return 1;
-    }
+// ======================= FIFOS Y UTILS =========================
 
-    signal(SIGINT, limpiar_fifo);
-
-    if (strcmp(argv[1], "cliente") == 0) {
-        cliente();
-    } else if (strcmp(argv[1], "cocina") == 0) {
-        cocina();
-    } else if (strcmp(argv[1], "monitor") == 0) {
-        monitor();
-    } else {
-        printf("Argumento inválido. Use cliente, cocina o monitor.\n");
-        return 1;
-    }
-
-    return 0;
+void crear_fifos() {
+    mkfifo(FIFO_PEDIDOS, 0666);
+    mkfifo(FIFO_ID, 0666);
+    mkfifo(FIFO_MONITOR, 0666);
 }
+
+void limpiar_fifos() {
+    unlink(FIFO_PEDIDOS);
+    unlink(FIFO_ID);
+    unlink(FIFO_MONITOR);
+
+    for (int i = 0; i < 100; i++) {
+        char tmp[64];
+        sprintf(tmp, "/tmp/resp_%d", i);
+        unlink(tmp);
+    }
+
+    printf("\n[FIFOs limpios]\n");
+    exit(0);
+}
+
+int solicitar_id() {
+    int id = getpid(); // fallback si no hay gestor
+    int fd = open(FIFO_ID, O_WRONLY | O_NONBLOCK);
+    if (fd >= 0) {
+        write(fd, "1", 1);
+        close(fd);
+        fd = open(FIFO_ID, O_RDONLY);
+        read(fd, &id, sizeof(int));
+        close(fd);
+    }
+    return id;
+}
+
 
